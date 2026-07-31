@@ -31,6 +31,34 @@ type Post = PostSummary & {
   content: string;
 };
 
+export type AccountSummary = {
+  email: string;
+  status: 'active' | 'blocked';
+  generationsUsed: number;
+  generationLimit: number;
+  remaining: number;
+};
+
+export type Quota = {
+  used: number;
+  limit: number;
+  remaining: number;
+};
+
+export const ensureAccount = async ({
+  userId,
+  email,
+}: {
+  userId: string;
+  email: string;
+}): Promise<AccountSummary> => {
+  return (await convex.mutation(anyApi.access.ensureAccountForMcp, {
+    serviceSecret: env.serviceSecret,
+    userId,
+    email,
+  })) as AccountSummary;
+};
+
 export const authWhoAmI = async (
   userId: string,
 ): Promise<{
@@ -55,31 +83,36 @@ export const listRecentDomains = async (userId: string): Promise<{ domains: stri
 
 export const findTrendingTopics = async ({
   userId,
+  email,
   domain,
   limit,
   provider,
 }: {
   userId: string;
+  email: string;
   domain: string;
   limit?: number;
   provider?: Provider;
-}): Promise<Topic[]> => {
+}): Promise<{ topics: Topic[]; quota: Quota }> => {
   return (await convex.action(anyApi.ai.findTrendingTopicsForMcp, {
     serviceSecret: env.serviceSecret,
     userId,
+    email,
     domain,
     limit,
     provider,
-  })) as Topic[];
+  })) as { topics: Topic[]; quota: Quota };
 };
 
 export const generatePostFromTopic = async ({
   userId,
+  email,
   topic,
   domain,
   provider,
 }: {
   userId: string;
+  email: string;
   topic: string;
   domain: string;
   provider?: Provider;
@@ -88,10 +121,12 @@ export const generatePostFromTopic = async ({
   title: string;
   content: string;
   wordCount: number;
+  quota: Quota;
 }> => {
   return (await convex.action(anyApi.ai.generatePostForMcp, {
     serviceSecret: env.serviceSecret,
     userId,
+    email,
     topic,
     domain,
     provider,
@@ -100,6 +135,7 @@ export const generatePostFromTopic = async ({
     title: string;
     content: string;
     wordCount: number;
+    quota: Quota;
   };
 };
 

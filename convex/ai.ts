@@ -4,7 +4,8 @@ import { anyApi } from 'convex/server';
 import { v } from 'convex/values';
 import OpenAI from 'openai';
 import { action } from './_generated/server';
-import { api } from './_generated/api';
+import { api, internal } from './_generated/api';
+import { assertServiceSecret } from './lib/service';
 
 type Provider = 'openai_web' | 'gsc';
 
@@ -22,6 +23,12 @@ type GeneratedPost = {
   wordCount: number;
 };
 
+type Quota = {
+  used: number;
+  limit: number;
+  remaining: number;
+};
+
 const providerValidator = v.optional(v.union(v.literal('openai_web'), v.literal('gsc')));
 
 const getClient = () => {
@@ -30,13 +37,6 @@ const getClient = () => {
     throw new Error('OPENAI_API_KEY not set. Run: npx convex env set OPENAI_API_KEY <key>');
   }
   return new OpenAI({ apiKey });
-};
-
-const assertServiceSecret = (provided: string) => {
-  const expected = process.env.MCP_SERVICE_SECRET;
-  if (!expected || provided !== expected) {
-    throw new Error('Unauthorized');
-  }
 };
 
 const resolveProvider = (provider?: Provider): Provider => {
@@ -221,31 +221,48 @@ export const findTrendingTopicsForMcp = action({
   args: {
     serviceSecret: v.string(),
     userId: v.string(),
+    email: v.string(),
     domain: v.string(),
     limit: v.optional(v.number()),
     provider: providerValidator,
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<{ topics: TopicCandidate[]; quota: Quota }> => {
     assertServiceSecret(args.serviceSecret);
     resolveProvider(args.provider);
 
     const limit = Math.min(Math.max(Math.floor(args.limit ?? 5), 1), 10);
-    const client = getClient();
 
-    const topics = await findTrendingTopicsWithOpenAI({
-      client,
-      domain: args.domain,
-      limit,
-    });
-
-    await ctx.runMutation(anyApi.mcp.topicsCreateBatchForMcp, {
-      serviceSecret: args.serviceSecret,
+    const quota = await ctx.runMutation(internal.access.consume, {
+      email: args.email,
       userId: args.userId,
-      domain: args.domain,
-      topics,
+      tool: 'topics_find_trending',
+      cost: 1,
     });
 
-    return topics;
+    try {
+      const client = getClient();
+
+      const topics = await findTrendingTopicsWithOpenAI({
+        client,
+        domain: args.domain,
+        limit,
+      });
+
+      await ctx.runMutation(anyApi.mcp.topicsCreateBatchForMcp, {
+        serviceSecret: args.serviceSecret,
+        userId: args.userId,
+        domain: args.domain,
+        topics,
+      });
+
+      return {
+        topics,
+        quota: { used: quota.used, limit: quota.limit, remaining: quota.remaining },
+      };
+    } catch (error) {
+      await ctx.runMutation(internal.access.refund, { usageId: quota.usageId });
+      throw error;
+    }
   },
 });
 
@@ -293,37 +310,51 @@ export const generatePostForMcp = action({
   args: {
     serviceSecret: v.string(),
     userId: v.string(),
+    email: v.string(),
     topic: v.string(),
     domain: v.string(),
     provider: providerValidator,
   },
-  handler: async (ctx, args): Promise<GeneratedPost> => {
+  handler: async (ctx, args): Promise<GeneratedPost & { quota: Quota }> => {
     assertServiceSecret(args.serviceSecret);
     resolveProvider(args.provider);
 
-    const client = getClient();
-    const generated = await generatePostWithOpenAI({
-      client,
-      topic: args.topic,
-      domain: args.domain,
-    });
-
-    const created = await ctx.runMutation(anyApi.mcp.postsCreateForMcp, {
-      serviceSecret: args.serviceSecret,
+    const quota = await ctx.runMutation(internal.access.consume, {
+      email: args.email,
       userId: args.userId,
-      title: generated.title,
-      content: generated.content,
-      status: 'published',
-      generatedBy: 'ai',
-      domain: args.domain,
-      topic: args.topic,
+      tool: 'post_generate_from_topic',
+      cost: 1,
     });
 
-    return {
-      _id: created.postId,
-      title: generated.title,
-      content: generated.content,
-      wordCount: generated.wordCount,
-    };
+    try {
+      const client = getClient();
+      const generated = await generatePostWithOpenAI({
+        client,
+        topic: args.topic,
+        domain: args.domain,
+      });
+
+      const created = await ctx.runMutation(anyApi.mcp.postsCreateForMcp, {
+        serviceSecret: args.serviceSecret,
+        userId: args.userId,
+        title: generated.title,
+        content: generated.content,
+        status: 'published',
+        generatedBy: 'ai',
+        domain: args.domain,
+        topic: args.topic,
+      });
+
+      return {
+        _id: created.postId,
+        title: generated.title,
+        content: generated.content,
+        wordCount: generated.wordCount,
+        quota: { used: quota.used, limit: quota.limit, remaining: quota.remaining },
+      };
+    } catch (error) {
+      await ctx.runMutation(internal.access.refund, { usageId: quota.usageId });
+      throw error;
+    }
   },
 });

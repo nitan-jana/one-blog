@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { type InferSchema, type ToolMetadata } from 'xmcp';
 import { updatePost, type PostStatus } from '../lib/convex-client';
-import { requireSessionUserId } from '../lib/clerk-session';
+import { requireMcpActor } from '../lib/clerk-session';
 import { toToolResult } from '../lib/tool-result';
 
 export const schema = {
@@ -31,7 +31,7 @@ export default async function postsUpdateTool({
     throw new Error('At least one of title, content, or status is required.');
   }
 
-  const userId = await requireSessionUserId();
+  const { userId } = await requireMcpActor();
   const result = await updatePost({
     userId,
     postId,

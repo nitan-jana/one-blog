@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { type InferSchema, type ToolMetadata } from 'xmcp';
 import { getPost } from '../lib/convex-client';
-import { requireSessionUserId } from '../lib/clerk-session';
+import { requireMcpActor } from '../lib/clerk-session';
 import { toToolResult } from '../lib/tool-result';
 
 export const schema = {
@@ -19,7 +19,7 @@ export const metadata: ToolMetadata = {
 };
 
 export default async function postsGetTool({ postId }: InferSchema<typeof schema>) {
-  const userId = await requireSessionUserId();
+  const { userId } = await requireMcpActor();
   const post = await getPost({ userId, postId });
   if (!post) {
     throw new Error('Post not found');

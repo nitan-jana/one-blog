@@ -1,12 +1,6 @@
 import { v } from 'convex/values';
 import { mutation, query } from './_generated/server';
-
-const assertServiceSecret = (provided: string) => {
-  const expected = process.env.MCP_SERVICE_SECRET;
-  if (!expected || provided !== expected) {
-    throw new Error('Unauthorized');
-  }
-};
+import { assertServiceSecret } from './lib/service';
 
 const postStatusValidator = v.union(
   v.literal('draft'),

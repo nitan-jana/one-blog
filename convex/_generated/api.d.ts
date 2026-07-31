@@ -8,7 +8,9 @@
  * @module
  */
 
+import type * as access from "../access.js";
 import type * as ai from "../ai.js";
+import type * as lib_service from "../lib/service.js";
 import type * as mcp from "../mcp.js";
 import type * as posts from "../posts.js";
 import type * as topics from "../topics.js";
@@ -20,7 +22,9 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  access: typeof access;
   ai: typeof ai;
+  "lib/service": typeof lib_service;
   mcp: typeof mcp;
   posts: typeof posts;
   topics: typeof topics;

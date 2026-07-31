@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { type InferSchema, type ToolMetadata } from 'xmcp';
 import { generatePostFromTopic, type Provider } from '../lib/convex-client';
-import { requireSessionUserId } from '../lib/clerk-session';
+import { requireMcpActor } from '../lib/clerk-session';
 import { toToolResult } from '../lib/tool-result';
 
 export const schema = {
@@ -12,7 +12,8 @@ export const schema = {
 
 export const metadata: ToolMetadata = {
   name: 'post_generate_from_topic',
-  description: 'Research and generate a full blog post for a domain/topic, then save it.',
+  description:
+    'Research and generate a full blog post for a domain/topic, then save it. Consumes one generation credit from the caller.',
   annotations: {
     readOnlyHint: false,
     idempotentHint: false,
@@ -25,10 +26,11 @@ export default async function postGenerateFromTopicTool({
   domain,
   provider,
 }: InferSchema<typeof schema>) {
-  const userId = await requireSessionUserId();
+  const { userId, email } = await requireMcpActor();
 
   const generated = await generatePostFromTopic({
     userId,
+    email,
     topic,
     domain,
     provider: provider as Provider | undefined,
@@ -40,9 +42,14 @@ export default async function postGenerateFromTopicTool({
     content: generated.content,
     wordCount: generated.wordCount,
     status: 'published',
+    quota: generated.quota,
     providerUsed: provider ?? 'openai_web',
     dataScope: 'app',
   };
 
-  return toToolResult(result, `Post generated successfully: ${generated.title}`);
+  return toToolResult(
+    result,
+    `Post generated successfully: ${generated.title}. ` +
+      `${generated.quota.remaining} of ${generated.quota.limit} generations remaining.`,
+  );
 }
