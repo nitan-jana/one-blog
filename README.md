@@ -83,7 +83,9 @@ cd mcp-server && pnpm dev # MCP server
 ```
 
 Verifying a change in the running app — including how to drive the quota states —
-is covered in [`docs/testing-the-ui.md`](./docs/testing-the-ui.md).
+is covered in [`docs/testing-the-ui.md`](./docs/testing-the-ui.md). Shipping to production is
+[`docs/releasing.md`](./docs/releasing.md); the three units share one backend and are not
+independently deployable when the Convex API changes.
 
 ### Environment variables
 

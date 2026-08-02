@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "xmcp dev",
     "build": "xmcp build",
+    "typecheck": "tsc --noEmit",
     "start": "node dist/http.js"
   },
   "dependencies": {

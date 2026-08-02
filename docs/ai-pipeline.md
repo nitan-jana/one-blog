@@ -247,26 +247,42 @@ its own. It imports the root deployment's instead:
 
 ```ts
 // mcp-server/src/lib/convex-client.ts
-import { api } from '../../../convex/_generated/api';
+import { anyApi } from 'convex/server';
+import type { api as generatedApi } from '../../../convex/_generated/api';
+
+const api = anyApi as unknown as typeof generatedApi;
 ```
 
-That single import is what makes the boundary typechecked. Function names, argument shapes, and
-return types all come from the real Convex functions, so renaming one or changing its signature is
-a **build error in the MCP server** rather than a runtime failure in production.
-
-The client's exported types are derived rather than restated, which is the part that stops them
-drifting:
+That is what makes the boundary typechecked. Function names, argument shapes, and return types all
+come from the real Convex functions, so renaming one or changing its signature is a **type error in
+the MCP server** rather than a runtime failure in production. The exported types are derived rather
+than restated, which is what stops them drifting:
 
 ```ts
 export type PostStatus = NonNullable<FunctionArgs<typeof api.mcp.postsListForMcp>['status']>;
 export type AccountSummary = FunctionReturnType<typeof api.access.ensureAccountForMcp>;
 ```
 
-Two things make this cheap. `api` is `anyApi` at runtime (see `convex/_generated/api.js`), so
-nothing is bundled and execution is unchanged — the entire benefit is at compile time. And
-`skipLibCheck: true` in `mcp-server/tsconfig.json` absorbs the fact that the generated `api.d.ts`
-type-imports `convex/ai.ts`, which imports `openai` — a package the MCP server does not depend on
-and does not need.
+### Why the import is type-only
+
+Because `mcp-server/` is an isolated workspace, and **module resolution is anchored to the
+importing file's directory**. Both halves of that matter:
+
+- A _value_ import of `convex/_generated/api` makes the bundler pull that file in, and its own
+  `import { anyApi } from 'convex/server'` then resolves from `convex/_generated/` — walking up to
+  the repo root, never into `mcp-server/node_modules`. A deploy that installs only this package has
+  nothing there, so the build fails to resolve it.
+- The generated `api.d.ts` type-imports `convex/ai.ts`, whose `openai` and `convex/values` imports
+  fail the same way. Every handler then collapses to `any` and the build dies in `TS7006`s.
+
+The first is solved by keeping the import type-only — it is erased at build time, and `anyApi` (from
+this package's own dependency) is what the generated module returns at runtime anyway, so behaviour
+is unchanged. The second is solved by `typescript.skipTypeCheck` in `xmcp.config.ts`: the bundler
+stops type-checking, and `pnpm typecheck` gates types instead, where the whole workspace is
+installed.
+
+> Adding `openai` to this package's dependencies would **not** fix it — resolution from
+> `convex/ai.ts` never consults `mcp-server/node_modules`.
 
 > **Historical note.** `mcp-server/` used to contain its own `convex/_generated/` directory
 > containing an _empty_ API (`ApiFromModules<{}>`), scaffolded by the Convex CLI because the package

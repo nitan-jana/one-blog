@@ -1,14 +1,25 @@
 import { ConvexHttpClient } from 'convex/browser';
-import type { FunctionArgs, FunctionReturnType } from 'convex/server';
-import { api } from '../../../convex/_generated/api';
+import { anyApi, type FunctionArgs, type FunctionReturnType } from 'convex/server';
+import type { api as generatedApi } from '../../../convex/_generated/api';
 import { env } from './env';
 
 const convex = new ConvexHttpClient(env.convexUrl);
 
 /**
+ * The generated `api` is imported for its types only, then reconstructed from `anyApi` — which is
+ * exactly what `convex/_generated/api.js` returns at runtime anyway.
+ *
+ * Importing it as a value would make the bundler pull that file in, and its own
+ * `import { anyApi } from 'convex/server'` resolves relative to `convex/_generated/`, walking up
+ * to the repo root rather than into `mcp-server/node_modules`. A deploy that installs only this
+ * package has nothing there, so the build fails to resolve it. Keeping the import type-only erases
+ * it at build time and leaves runtime behaviour unchanged.
+ */
+const api = anyApi as unknown as typeof generatedApi;
+
+/**
  * Types are derived from the Convex functions rather than restated here, so renaming a function or
- * changing its shape is a compile error in this package instead of a runtime surprise. `api` is
- * `anyApi` at runtime — this costs nothing at execution time and buys everything at build time.
+ * changing its shape is a compile error in this package instead of a runtime surprise.
  */
 export type PostStatus = NonNullable<FunctionArgs<typeof api.mcp.postsListForMcp>['status']>;
 export type AccountSummary = FunctionReturnType<typeof api.access.ensureAccountForMcp>;
