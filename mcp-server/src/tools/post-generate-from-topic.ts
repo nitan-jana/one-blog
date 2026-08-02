@@ -1,13 +1,12 @@
 import { z } from 'zod';
 import { type InferSchema, type ToolMetadata } from 'xmcp';
-import { generatePostFromTopic, type Provider } from '../lib/convex-client';
+import { generatePostFromTopic } from '../lib/convex-client';
 import { requireMcpActor } from '../lib/clerk-session';
 import { toToolResult } from '../lib/tool-result';
 
 export const schema = {
   topic: z.string().min(1),
   domain: z.string().min(1),
-  provider: z.enum(['openai_web', 'gsc']).optional(),
 };
 
 export const metadata: ToolMetadata = {
@@ -24,7 +23,6 @@ export const metadata: ToolMetadata = {
 export default async function postGenerateFromTopicTool({
   topic,
   domain,
-  provider,
 }: InferSchema<typeof schema>) {
   const { userId, email } = await requireMcpActor();
 
@@ -33,7 +31,6 @@ export default async function postGenerateFromTopicTool({
     email,
     topic,
     domain,
-    provider: provider as Provider | undefined,
   });
 
   const result = {
@@ -43,7 +40,6 @@ export default async function postGenerateFromTopicTool({
     wordCount: generated.wordCount,
     status: 'published',
     quota: generated.quota,
-    providerUsed: provider ?? 'openai_web',
     dataScope: 'app',
   };
 

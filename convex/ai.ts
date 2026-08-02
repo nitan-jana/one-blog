@@ -7,9 +7,8 @@ import type { ActionCtx } from './_generated/server';
 import { action } from './_generated/server';
 import { api, internal } from './_generated/api';
 import { requireWebActor } from './lib/identity';
+import { modelFor } from './lib/models';
 import { assertServiceSecret } from './lib/service';
-
-type Provider = 'openai_web' | 'gsc';
 
 type TopicCandidate = {
   name: string;
@@ -30,8 +29,6 @@ type Quota = {
   limit: number;
   remaining: number;
 };
-
-const providerValidator = v.optional(v.union(v.literal('openai_web'), v.literal('gsc')));
 
 /**
  * Reserve a credit, do the OpenAI work, refund if it fails. Every AI action goes through here —
@@ -74,14 +71,6 @@ const getClient = () => {
     throw new Error('OPENAI_API_KEY not set. Run: npx convex env set OPENAI_API_KEY <key>');
   }
   return new OpenAI({ apiKey });
-};
-
-const resolveProvider = (provider?: Provider): Provider => {
-  const selected = provider ?? 'openai_web';
-  if (selected === 'gsc') {
-    throw new Error('Provider "gsc" is not configured yet. Use "openai_web" for now.');
-  }
-  return selected;
 };
 
 const extractText = (response: OpenAI.Responses.Response): string => {
@@ -132,6 +121,29 @@ const parseTopics = (jsonText: string, limit: number): TopicCandidate[] => {
   });
 };
 
+/**
+ * The write call uses strict structured output, so malformed JSON is an API-level error rather
+ * than something to defend against here. A refusal can still come back as prose, though.
+ */
+const parsePost = (jsonText: string): { title: string; content: string } => {
+  const parsed: unknown = JSON.parse(jsonText);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Invalid post response');
+  }
+
+  const candidate = parsed as Record<string, unknown>;
+  if (typeof candidate.title !== 'string' || typeof candidate.content !== 'string') {
+    throw new Error('Invalid post response');
+  }
+
+  const content = candidate.content.trim();
+  if (!content) {
+    throw new Error('No content generated');
+  }
+
+  return { title: candidate.title.trim(), content };
+};
+
 const findTrendingTopicsWithOpenAI = async ({
   client,
   domain,
@@ -142,7 +154,7 @@ const findTrendingTopicsWithOpenAI = async ({
   limit: number;
 }): Promise<TopicCandidate[]> => {
   const response = await client.responses.create({
-    model: 'gpt-4o',
+    model: modelFor('topics'),
     tools: [{ type: 'web_search_preview' }],
     input: `Find ${limit} trending topics in the "${domain}" domain that would make great blog posts right now. Use web search to find current trends, popular discussions, and emerging topics.
 
@@ -172,7 +184,7 @@ const generatePostWithOpenAI = async ({
   wordCount: number;
 }> => {
   const researchResponse = await client.responses.create({
-    model: 'gpt-4o',
+    model: modelFor('research'),
     tools: [{ type: 'web_search_preview' }],
     input: `Research the topic "${topic}" in the "${domain}" domain. Use web search to find:
       - Key facts and statistics
@@ -186,7 +198,7 @@ const generatePostWithOpenAI = async ({
   const research = extractText(researchResponse);
 
   const writeResponse = await client.responses.create({
-    model: 'gpt-4o',
+    model: modelFor('write'),
     input: `Using this research, write a comprehensive blog post:
 
       Research:
@@ -199,38 +211,44 @@ const generatePostWithOpenAI = async ({
       - Format: Markdown
       - Include: engaging introduction, clear headings (##), practical examples, statistics where relevant, actionable conclusion
       - Tone: professional but accessible
-      - Do NOT include a title heading (it will be added separately)
+
+      Return two fields:
+      - "title": one compelling title that reflects the post you actually wrote. No surrounding quotes.
+      - "content": the post body. Do NOT repeat the title as a heading — it is stored separately.
 
       Write the blog post now.`,
+    text: {
+      format: {
+        type: 'json_schema',
+        name: 'blog_post',
+        strict: true,
+        schema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            content: { type: 'string' },
+          },
+          required: ['title', 'content'],
+          additionalProperties: false,
+        },
+      },
+    },
   });
 
-  const content = extractText(writeResponse);
-  if (!content) {
-    throw new Error('No content generated');
-  }
+  const parsed = parsePost(extractText(writeResponse));
+  const title = parsed.title.replace(/^["']|["']$/g, '') || topic;
+  const wordCount = parsed.content.split(/\s+/).filter(Boolean).length;
 
-  const wordCount = content.split(/\s+/).filter(Boolean).length;
-
-  const titleResponse = await client.responses.create({
-    model: 'gpt-4o',
-    input: `Generate a single compelling blog post title for this content about "${topic}". Return ONLY the title text, nothing else.`,
-  });
-
-  const titleText = extractText(titleResponse);
-  const title = titleText ? titleText.replace(/^["']|["']$/g, '') : topic;
-
-  return { title, content, wordCount };
+  return { title, content: parsed.content, wordCount };
 };
 
 export const findTrendingTopics = action({
   args: {
     domain: v.string(),
     limit: v.optional(v.number()),
-    provider: providerValidator,
   },
   handler: async (ctx, args): Promise<{ topics: TopicCandidate[]; quota: Quota }> => {
     const actor = await requireWebActor(ctx.auth);
-    resolveProvider(args.provider);
 
     const limit = Math.min(Math.max(Math.floor(args.limit ?? 5), 1), 10);
 
@@ -265,11 +283,9 @@ export const findTrendingTopicsForMcp = action({
     email: v.string(),
     domain: v.string(),
     limit: v.optional(v.number()),
-    provider: providerValidator,
   },
   handler: async (ctx, args): Promise<{ topics: TopicCandidate[]; quota: Quota }> => {
     assertServiceSecret(args.serviceSecret);
-    resolveProvider(args.provider);
 
     const limit = Math.min(Math.max(Math.floor(args.limit ?? 5), 1), 10);
 
@@ -307,11 +323,9 @@ export const generatePost = action({
   args: {
     topic: v.string(),
     domain: v.string(),
-    provider: providerValidator,
   },
   handler: async (ctx, args): Promise<GeneratedPost & { quota: Quota }> => {
     const actor = await requireWebActor(ctx.auth);
-    resolveProvider(args.provider);
 
     return await withCredit(
       ctx,
@@ -354,11 +368,9 @@ export const generatePostForMcp = action({
     email: v.string(),
     topic: v.string(),
     domain: v.string(),
-    provider: providerValidator,
   },
   handler: async (ctx, args): Promise<GeneratedPost & { quota: Quota }> => {
     assertServiceSecret(args.serviceSecret);
-    resolveProvider(args.provider);
 
     return await withCredit(
       ctx,

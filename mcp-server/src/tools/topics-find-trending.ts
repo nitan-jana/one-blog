@@ -1,13 +1,12 @@
 import { z } from 'zod';
 import { type InferSchema, type ToolMetadata } from 'xmcp';
-import { findTrendingTopics, type Provider } from '../lib/convex-client';
+import { findTrendingTopics } from '../lib/convex-client';
 import { requireMcpActor } from '../lib/clerk-session';
 import { toToolResult } from '../lib/tool-result';
 
 export const schema = {
   domain: z.string().min(1),
   limit: z.number().int().min(1).max(10).optional(),
-  provider: z.enum(['openai_web', 'gsc']).optional(),
 };
 
 export const metadata: ToolMetadata = {
@@ -24,7 +23,6 @@ export const metadata: ToolMetadata = {
 export default async function topicsFindTrendingTool({
   domain,
   limit,
-  provider,
 }: InferSchema<typeof schema>) {
   const { userId, email } = await requireMcpActor();
 
@@ -33,13 +31,11 @@ export default async function topicsFindTrendingTool({
     email,
     domain,
     limit,
-    provider: provider as Provider | undefined,
   });
 
   const result = {
     topics,
     quota,
-    providerUsed: provider ?? 'openai_web',
     dataScope: 'app',
     fetchedAt: Date.now(),
   };
