@@ -1,10 +1,21 @@
 import { v } from 'convex/values';
 import type { Doc } from './_generated/dataModel';
-import type { MutationCtx } from './_generated/server';
-import { internalMutation, internalQuery, mutation } from './_generated/server';
+import type { MutationCtx, QueryCtx } from './_generated/server';
+import { internalMutation, internalQuery, mutation, query } from './_generated/server';
 import { assertServiceSecret, normalizeEmail } from './lib/service';
 
 const DEFAULT_TRIAL_LIMIT = 10;
+const DEFAULT_REPORT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+const sourceValidator = v.union(v.literal('mcp'), v.literal('web'));
+
+/** Admin reads are bounded so a growing table cannot blow the Convex read limit. */
+const clampLimit = (value: number | undefined, fallback: number, max: number): number => {
+  if (!value) {
+    return fallback;
+  }
+  return Math.min(Math.max(Math.floor(value), 1), max);
+};
 
 const trialLimit = (): number => {
   const raw = process.env.MCP_TRIAL_GENERATION_LIMIT;
@@ -18,7 +29,7 @@ const trialLimit = (): number => {
  * switching their primary email in Clerk.
  */
 const findAccount = async (
-  ctx: MutationCtx,
+  ctx: QueryCtx,
   email: string,
   userId?: string,
 ): Promise<Doc<'mcpAccounts'> | null> => {
@@ -110,6 +121,35 @@ export const ensureAccountForMcp = mutation({
 });
 
 /**
+ * The signed-in caller's own quota, for the web app. Authenticated by the Clerk identity rather
+ * than the service secret. A query cannot enrol anyone, so a first-time user — who has no row
+ * until their first generation — is shown the trial allowance they are about to get.
+ */
+export const myQuota = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity?.email) {
+      return null;
+    }
+
+    const email = identity.email.trim().toLowerCase();
+    const account = await findAccount(ctx, email, identity.subject);
+    if (!account) {
+      return {
+        email,
+        status: 'active' as const,
+        generationsUsed: 0,
+        generationLimit: trialLimit(),
+        remaining: trialLimit(),
+      };
+    }
+
+    return toSummary(account);
+  },
+});
+
+/**
  * Reserve a generation credit before spending on OpenAI. Lives here rather than in the MCP
  * server so it cannot be bypassed, and so the counter bump and the audit row commit together.
  */
@@ -119,6 +159,7 @@ export const consume = internalMutation({
     userId: v.optional(v.string()),
     tool: v.string(),
     cost: v.number(),
+    source: v.optional(sourceValidator),
   },
   handler: async (ctx, args) => {
     const email = normalizeEmail(args.email);
@@ -142,6 +183,7 @@ export const consume = internalMutation({
       cost: args.cost,
       refunded: false,
       at: Date.now(),
+      source: args.source,
     });
 
     return {
@@ -227,17 +269,110 @@ export const reinstate = internalMutation({
 });
 
 export const list = internalQuery({
-  args: {},
-  handler: async (ctx) => {
-    const accounts = await ctx.db.query('mcpAccounts').collect();
-    return accounts
-      .sort((a, b) => b.lastUsedAt - a.lastUsedAt)
-      .map((account) => ({
-        ...toSummary(account),
-        userId: account.userId,
-        note: account.note,
-        createdAt: account.createdAt,
-        lastUsedAt: account.lastUsedAt,
-      }));
+  args: { limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const accounts = await ctx.db
+      .query('mcpAccounts')
+      .withIndex('by_last_used')
+      .order('desc')
+      .take(clampLimit(args.limit, 50, 200));
+
+    return accounts.map((account) => ({
+      ...toSummary(account),
+      userId: account.userId,
+      note: account.note,
+      createdAt: account.createdAt,
+      lastUsedAt: account.lastUsedAt,
+    }));
+  },
+});
+
+/** Raw audit rows, newest first — for one account with `email`, or everyone without it. */
+export const usage = internalQuery({
+  args: { email: v.optional(v.string()), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const limit = clampLimit(args.limit, 50, 500);
+    const email = args.email ? normalizeEmail(args.email) : undefined;
+
+    const rows = email
+      ? await ctx.db
+          .query('mcpUsage')
+          .withIndex('by_email', (q) => q.eq('email', email))
+          .order('desc')
+          .take(limit)
+      : await ctx.db.query('mcpUsage').withIndex('by_at').order('desc').take(limit);
+
+    return rows.map((row) => ({
+      email: row.email,
+      tool: row.tool,
+      cost: row.cost,
+      refunded: row.refunded,
+      source: row.source ?? 'mcp',
+      at: row.at,
+    }));
+  },
+});
+
+/**
+ * Where the OpenAI budget went: net spend per account over a window, broken down by tool and by
+ * surface. Bounded by `since` (default 30 days) so it stays a windowed read, not a table scan.
+ */
+export const report = internalQuery({
+  args: { email: v.optional(v.string()), since: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const since = args.since ?? Date.now() - DEFAULT_REPORT_WINDOW_MS;
+    const email = args.email ? normalizeEmail(args.email) : undefined;
+
+    const rows = email
+      ? await ctx.db
+          .query('mcpUsage')
+          .withIndex('by_email', (q) => q.eq('email', email))
+          .filter((q) => q.gte(q.field('at'), since))
+          .collect()
+      : await ctx.db
+          .query('mcpUsage')
+          .withIndex('by_at', (q) => q.gte('at', since))
+          .collect();
+
+    type Row = {
+      email: string;
+      charged: number;
+      refunded: number;
+      net: number;
+      byTool: Record<string, number>;
+      bySource: { mcp: number; web: number };
+      lastUsedAt: number;
+    };
+
+    const byEmail = new Map<string, Row>();
+
+    for (const row of rows) {
+      const entry = byEmail.get(row.email) ?? {
+        email: row.email,
+        charged: 0,
+        refunded: 0,
+        net: 0,
+        byTool: {},
+        bySource: { mcp: 0, web: 0 },
+        lastUsedAt: 0,
+      };
+
+      entry.charged += row.cost;
+      if (row.refunded) {
+        entry.refunded += row.cost;
+      } else {
+        entry.net += row.cost;
+        entry.byTool[row.tool] = (entry.byTool[row.tool] ?? 0) + row.cost;
+        entry.bySource[row.source ?? 'mcp'] += row.cost;
+      }
+      entry.lastUsedAt = Math.max(entry.lastUsedAt, row.at);
+
+      byEmail.set(row.email, entry);
+    }
+
+    return {
+      since,
+      accounts: [...byEmail.values()].sort((a, b) => b.net - a.net),
+    };
   },
 });

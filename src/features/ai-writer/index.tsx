@@ -40,6 +40,17 @@ export default function AIGenerate() {
   const findTrendingTopics = useAction(api.ai.findTrendingTopics);
   const generatePost = useAction(api.ai.generatePost);
   const recentDomains = useQuery(api.topics.recentDomains) ?? [];
+  const quota = useQuery(api.access.myQuota);
+
+  // Generations are metered per account, shared with the MCP server. Stop the user here rather
+  // than after a failed round-trip through OpenAI.
+  const outOfCredits = quota?.status === 'blocked' || quota?.remaining === 0;
+  const quotaMessage =
+    quota?.status === 'blocked'
+      ? 'Access to AI generation has been revoked for this account.'
+      : quota?.remaining === 0
+        ? `Generation limit reached (${quota.generationsUsed}/${quota.generationLimit}). Ask the owner of One Blog to raise your limit.`
+        : null;
 
   const reset = () => {
     setDomain('');
@@ -64,7 +75,7 @@ export default function AIGenerate() {
 
     try {
       const result = await findTrendingTopics({ domain: domain.trim() });
-      setTopics(result);
+      setTopics(result.topics);
       setStep('topics');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to find topics');
@@ -123,16 +134,23 @@ export default function AIGenerate() {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="bg-background border-border w-full max-w-lg rounded-lg border shadow-lg">
         <div className="flex items-center justify-between border-b p-4">
-          <h2 className="text-lg font-semibold">AI Blog Generator</h2>
+          <div className="flex items-baseline gap-2">
+            <h2 className="text-lg font-semibold">AI Blog Generator</h2>
+            {quota && (
+              <span className="text-muted-foreground text-xs">
+                {quota.remaining} of {quota.generationLimit} generations left
+              </span>
+            )}
+          </div>
           <Button variant="ghost" size="icon" onClick={handleClose}>
             <X className="size-4" />
           </Button>
         </div>
 
         <div className="p-4">
-          {error && (
+          {(error || quotaMessage) && (
             <div className="bg-destructive/10 text-destructive mb-4 rounded-md p-3 text-sm">
-              {error}
+              {error ?? quotaMessage}
             </div>
           )}
 
@@ -143,11 +161,17 @@ export default function AIGenerate() {
               onSubmit={handleFindTopics}
               loading={loading}
               recentDomains={recentDomains}
+              disabled={outOfCredits}
             />
           )}
 
           {step === 'topics' && (
-            <TopicListStep topics={topics} onSelect={handleGeneratePost} onReset={reset} />
+            <TopicListStep
+              topics={topics}
+              onSelect={handleGeneratePost}
+              onReset={reset}
+              disabled={outOfCredits}
+            />
           )}
 
           {step === 'generating' && <GeneratingStep />}

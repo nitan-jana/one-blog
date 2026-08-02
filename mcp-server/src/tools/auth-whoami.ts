@@ -1,5 +1,4 @@
 import { type InferSchema, type ToolMetadata } from 'xmcp';
-import { authWhoAmI } from '../lib/convex-client';
 import { requireMcpActor } from '../lib/clerk-session';
 import { toToolResult } from '../lib/tool-result';
 
@@ -17,11 +16,11 @@ export const metadata: ToolMetadata = {
 
 export default async function authWhoAmITool(_: InferSchema<typeof schema>) {
   const { userId, sessionId, email, account } = await requireMcpActor();
-  const identity = await authWhoAmI(userId);
 
   return toToolResult(
     {
-      ...identity,
+      userId,
+      authType: 'clerk' as const,
       sessionId,
       email,
       status: account.status,

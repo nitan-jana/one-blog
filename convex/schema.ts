@@ -40,7 +40,8 @@ export default defineSchema({
     lastUsedAt: v.number(),
   })
     .index('by_email', ['email'])
-    .index('by_user', ['userId']),
+    .index('by_user', ['userId'])
+    .index('by_last_used', ['lastUsedAt']),
   mcpUsage: defineTable({
     email: v.string(),
     userId: v.optional(v.string()),
@@ -48,5 +49,9 @@ export default defineSchema({
     cost: v.number(),
     refunded: v.boolean(),
     at: v.number(),
-  }).index('by_email', ['email']),
+    // Optional: rows written before the web app was metered predate this field.
+    source: v.optional(v.union(v.literal('mcp'), v.literal('web'))),
+  })
+    .index('by_email', ['email'])
+    .index('by_at', ['at']),
 });

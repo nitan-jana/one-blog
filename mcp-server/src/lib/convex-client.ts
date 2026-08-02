@@ -59,21 +59,6 @@ export const ensureAccount = async ({
   })) as AccountSummary;
 };
 
-export const authWhoAmI = async (
-  userId: string,
-): Promise<{
-  userId: string;
-  authType: 'clerk';
-}> => {
-  return (await convex.query(anyApi.mcp.authWhoAmIForMcp, {
-    serviceSecret: env.serviceSecret,
-    userId,
-  })) as {
-    userId: string;
-    authType: 'clerk';
-  };
-};
-
 export const listRecentDomains = async (userId: string): Promise<{ domains: string[] }> => {
   return (await convex.query(anyApi.mcp.topicsRecentDomainsForMcp, {
     serviceSecret: env.serviceSecret,

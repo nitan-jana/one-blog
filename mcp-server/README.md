@@ -75,14 +75,19 @@ is what the `mcpAccounts` table in Convex is for.
 - **The quota is lifetime**, not per-month. Once it is spent, the owner has to raise the limit.
 - Accounts are keyed on the caller's **verified** primary email. An unverified email is rejected,
   since limits are granted by email address.
+- **The web app charges the same account.** Generating from the React UI spends a credit from the
+  same balance as the MCP tools, so a spent or blocked account cannot fall back to the browser.
 
 Enforcement sits in two places. The blocklist check runs in the MCP server on every call
 (`requireMcpActor` in `src/lib/clerk-session.ts`). The credit itself is reserved inside the Convex
 action, before any OpenAI call — so it cannot be bypassed by pointing a modified MCP server at the
 same backend, and the counter bump and audit row commit in one transaction. If the OpenAI work then
-fails, the credit is refunded.
+fails, the credit is refunded. Both surfaces go through one wrapper, `withCredit` in
+`convex/ai.ts`; the web path resolves its identity from the Convex token
+(`requireWebActor` in `convex/lib/identity.ts`), never from the client.
 
-Every metered call is logged to the `mcpUsage` table, so spend is attributable per person.
+Every metered call is logged to the `mcpUsage` table with a `source` of `mcp` or `web`, so spend is
+attributable per person and per surface.
 
 ### Administration
 
@@ -90,14 +95,23 @@ Access is managed with Convex `internalMutation`s — not reachable over the int
 from the CLI, which authenticates with the deploy key:
 
 ```bash
-npx convex run access:list '{}'                                              # who has what
+npx convex run access:list '{"limit":50}'                                    # who has what, newest use first
 npx convex run access:grant '{"email":"friend@example.com","limit":50,"note":"beta"}'
 npx convex run access:setLimit '{"email":"friend@example.com","limit":25}'   # also resets a spent trial
 npx convex run access:revoke '{"email":"spammer@example.com"}'               # blocks every tool
 npx convex run access:reinstate '{"email":"friend@example.com"}'
 
+npx convex run access:usage '{"limit":20}'                                   # recent calls, everyone
+npx convex run access:usage '{"email":"friend@example.com"}'                 # recent calls, one person
+npx convex run access:report '{}'                                            # net spend per account, last 30d
+npx convex run access:report '{"since":0}'                                   # ...since the beginning
+
 npx convex env set MCP_TRIAL_GENERATION_LIMIT 10                             # change the default trial
 ```
+
+`report` breaks each account down by tool and by surface (`mcp` vs `web`), and nets out refunds —
+it is the "where did my OpenAI budget go" view. `list` and `usage` are capped (defaults 50, maxima
+200 and 500) so they stay bounded reads.
 
 `grant` works before the person has ever connected — the row is matched by email when they first
 sign in.

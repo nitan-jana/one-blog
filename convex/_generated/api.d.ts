@@ -10,6 +10,7 @@
 
 import type * as access from "../access.js";
 import type * as ai from "../ai.js";
+import type * as lib_identity from "../lib/identity.js";
 import type * as lib_service from "../lib/service.js";
 import type * as mcp from "../mcp.js";
 import type * as posts from "../posts.js";
@@ -24,6 +25,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   access: typeof access;
   ai: typeof ai;
+  "lib/identity": typeof lib_identity;
   "lib/service": typeof lib_service;
   mcp: typeof mcp;
   posts: typeof posts;

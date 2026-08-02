@@ -30,20 +30,6 @@ const parseCursor = (value?: string): number => {
   return parsed;
 };
 
-export const authWhoAmIForMcp = query({
-  args: {
-    serviceSecret: v.string(),
-    userId: v.string(),
-  },
-  handler: async (_ctx, args) => {
-    assertServiceSecret(args.serviceSecret);
-    return {
-      userId: args.userId,
-      authType: 'clerk' as const,
-    };
-  },
-});
-
 export const topicsRecentDomainsForMcp = query({
   args: {
     serviceSecret: v.string(),
