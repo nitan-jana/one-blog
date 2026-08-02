@@ -107,16 +107,21 @@ export const postsListForMcp = query({
   handler: async (ctx, args) => {
     assertServiceSecret(args.serviceSecret);
 
-    const posts = await ctx.db
-      .query('posts')
-      .withIndex('by_user', (q) => q.eq('userId', args.userId))
-      .order('desc')
-      .collect();
-
-    const filtered = args.status ? posts.filter((post) => post.status === args.status) : posts;
     const limit = parseLimit(args.limit);
     const offset = parseCursor(args.cursor);
-    const window = filtered.slice(offset, offset + limit);
+    const status = args.status;
+
+    // Filtering by status goes through the two-field index rather than reading every post and
+    // discarding most of them. Either way, take one past the page so `nextCursor` is known
+    // without reading the rest of the table.
+    const scan = status
+      ? ctx.db
+          .query('posts')
+          .withIndex('by_user_status', (q) => q.eq('userId', args.userId).eq('status', status))
+      : ctx.db.query('posts').withIndex('by_user', (q) => q.eq('userId', args.userId));
+
+    const fetched = await scan.order('desc').take(offset + limit + 1);
+    const window = fetched.slice(offset, offset + limit);
 
     const items = window.map((post) => ({
       _id: post._id,
@@ -130,8 +135,7 @@ export const postsListForMcp = query({
       updatedAt: post.updatedAt,
     }));
 
-    const nextOffset = offset + limit;
-    const nextCursor = nextOffset < filtered.length ? String(nextOffset) : undefined;
+    const nextCursor = fetched.length > offset + limit ? String(offset + limit) : undefined;
 
     return {
       items,
