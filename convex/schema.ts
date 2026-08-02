@@ -12,8 +12,7 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index('by_user', ['userId'])
-    .index('by_user_domain', ['userId', 'domain'])
-    .index('by_created', ['createdAt']),
+    .index('by_user_domain', ['userId', 'domain']),
   posts: defineTable({
     userId: v.string(),
     title: v.string(),
@@ -27,6 +26,30 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index('by_user', ['userId'])
-    .index('by_user_status', ['userId', 'status'])
-    .index('by_created', ['createdAt']),
+    .index('by_user_status', ['userId', 'status']),
+  mcpAccounts: defineTable({
+    email: v.string(),
+    userId: v.optional(v.string()),
+    status: v.union(v.literal('active'), v.literal('blocked')),
+    generationLimit: v.number(),
+    generationsUsed: v.number(),
+    note: v.optional(v.string()),
+    createdAt: v.number(),
+    lastUsedAt: v.number(),
+  })
+    .index('by_email', ['email'])
+    .index('by_user', ['userId'])
+    .index('by_last_used', ['lastUsedAt']),
+  mcpUsage: defineTable({
+    email: v.string(),
+    userId: v.optional(v.string()),
+    tool: v.string(),
+    cost: v.number(),
+    refunded: v.boolean(),
+    at: v.number(),
+    // Optional: rows written before the web app was metered predate this field.
+    source: v.optional(v.union(v.literal('mcp'), v.literal('web'))),
+  })
+    .index('by_email', ['email'])
+    .index('by_at', ['at']),
 });

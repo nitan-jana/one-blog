@@ -1,106 +1,84 @@
 import { ConvexHttpClient } from 'convex/browser';
-import { anyApi } from 'convex/server';
+import { anyApi, type FunctionArgs, type FunctionReturnType } from 'convex/server';
+import type { api as generatedApi } from '../../../convex/_generated/api';
 import { env } from './env';
 
 const convex = new ConvexHttpClient(env.convexUrl);
 
-export type PostStatus = 'draft' | 'generating' | 'published';
-export type Provider = 'openai_web' | 'gsc';
+/**
+ * The generated `api` is imported for its types only, then reconstructed from `anyApi` — which is
+ * exactly what `convex/_generated/api.js` returns at runtime anyway.
+ *
+ * Importing it as a value would make the bundler pull that file in, and its own
+ * `import { anyApi } from 'convex/server'` resolves relative to `convex/_generated/`, walking up
+ * to the repo root rather than into `mcp-server/node_modules`. A deploy that installs only this
+ * package has nothing there, so the build fails to resolve it. Keeping the import type-only erases
+ * it at build time and leaves runtime behaviour unchanged.
+ */
+const api = anyApi as unknown as typeof generatedApi;
 
-export type Topic = {
-  name: string;
-  searchVolume: string;
-  trend: string;
-  reason: string;
-};
+/**
+ * Types are derived from the Convex functions rather than restated here, so renaming a function or
+ * changing its shape is a compile error in this package instead of a runtime surprise.
+ */
+export type PostStatus = NonNullable<FunctionArgs<typeof api.mcp.postsListForMcp>['status']>;
+export type AccountSummary = FunctionReturnType<typeof api.access.ensureAccountForMcp>;
+export type Topic = FunctionReturnType<typeof api.ai.findTrendingTopicsForMcp>['topics'][number];
+export type Quota = FunctionReturnType<typeof api.ai.findTrendingTopicsForMcp>['quota'];
 
-type PostSummary = {
-  _id: string;
-  title: string;
-  status: PostStatus;
-  domain: string;
-  topic: string;
-  wordCount: number;
-  generatedBy: string;
-  createdAt: number;
-  updatedAt: number;
-};
-
-type Post = PostSummary & {
-  userId: string;
-  content: string;
-};
-
-export const authWhoAmI = async (
-  userId: string,
-): Promise<{
-  userId: string;
-  authType: 'clerk';
-}> => {
-  return (await convex.query(anyApi.mcp.authWhoAmIForMcp, {
+export const ensureAccount = async ({ userId, email }: { userId: string; email: string }) => {
+  return await convex.mutation(api.access.ensureAccountForMcp, {
     serviceSecret: env.serviceSecret,
     userId,
-  })) as {
-    userId: string;
-    authType: 'clerk';
-  };
+    email,
+  });
 };
 
-export const listRecentDomains = async (userId: string): Promise<{ domains: string[] }> => {
-  return (await convex.query(anyApi.mcp.topicsRecentDomainsForMcp, {
+export const listRecentDomains = async (userId: string) => {
+  return await convex.query(api.mcp.topicsRecentDomainsForMcp, {
     serviceSecret: env.serviceSecret,
     userId,
-  })) as { domains: string[] };
+  });
 };
 
 export const findTrendingTopics = async ({
   userId,
+  email,
   domain,
   limit,
-  provider,
 }: {
   userId: string;
+  email: string;
   domain: string;
   limit?: number;
-  provider?: Provider;
-}): Promise<Topic[]> => {
-  return (await convex.action(anyApi.ai.findTrendingTopicsForMcp, {
+}) => {
+  return await convex.action(api.ai.findTrendingTopicsForMcp, {
     serviceSecret: env.serviceSecret,
     userId,
+    email,
     domain,
     limit,
-    provider,
-  })) as Topic[];
+  });
 };
 
 export const generatePostFromTopic = async ({
   userId,
+  email,
   topic,
   domain,
-  provider,
 }: {
   userId: string;
+  email: string;
   topic: string;
   domain: string;
-  provider?: Provider;
-}): Promise<{
-  _id: string;
-  title: string;
-  content: string;
-  wordCount: number;
-}> => {
-  return (await convex.action(anyApi.ai.generatePostForMcp, {
+}) => {
+  return await convex.action(api.ai.generatePostForMcp, {
     serviceSecret: env.serviceSecret,
     userId,
+    email,
     topic,
     domain,
-    provider,
-  })) as {
-    _id: string;
-    title: string;
-    content: string;
-    wordCount: number;
-  };
+  });
 };
 
 export const listPosts = async ({
@@ -113,31 +91,22 @@ export const listPosts = async ({
   status?: PostStatus;
   limit?: number;
   cursor?: string;
-}): Promise<{
-  items: PostSummary[];
-  nextCursor?: string;
-}> => {
-  return (await convex.query(anyApi.mcp.postsListForMcp, {
+}) => {
+  return await convex.query(api.mcp.postsListForMcp, {
     serviceSecret: env.serviceSecret,
     userId,
     status,
     limit,
     cursor,
-  })) as { items: PostSummary[]; nextCursor?: string };
+  });
 };
 
-export const getPost = async ({
-  userId,
-  postId,
-}: {
-  userId: string;
-  postId: string;
-}): Promise<Post | null> => {
-  return (await convex.query(anyApi.mcp.postGetForMcp, {
+export const getPost = async ({ userId, postId }: { userId: string; postId: string }) => {
+  return await convex.query(api.mcp.postGetForMcp, {
     serviceSecret: env.serviceSecret,
     userId,
-    postId,
-  })) as Post | null;
+    postId: postId as FunctionArgs<typeof api.mcp.postGetForMcp>['postId'],
+  });
 };
 
 export const createPost = async ({
@@ -154,12 +123,8 @@ export const createPost = async ({
   status?: PostStatus;
   domain: string;
   topic: string;
-}): Promise<{
-  postId: string;
-  status: PostStatus;
-  wordCount: number;
-}> => {
-  return (await convex.mutation(anyApi.mcp.postsCreateForMcp, {
+}) => {
+  return await convex.mutation(api.mcp.postsCreateForMcp, {
     serviceSecret: env.serviceSecret,
     userId,
     title,
@@ -168,7 +133,7 @@ export const createPost = async ({
     generatedBy: 'mcp',
     domain,
     topic,
-  })) as { postId: string; status: PostStatus; wordCount: number };
+  });
 };
 
 export const updatePost = async ({
@@ -183,27 +148,21 @@ export const updatePost = async ({
   title?: string;
   content?: string;
   status?: PostStatus;
-}): Promise<{ success: true }> => {
-  return (await convex.mutation(anyApi.mcp.postsUpdateForMcp, {
+}) => {
+  return await convex.mutation(api.mcp.postsUpdateForMcp, {
     serviceSecret: env.serviceSecret,
     userId,
-    postId,
+    postId: postId as FunctionArgs<typeof api.mcp.postsUpdateForMcp>['postId'],
     title,
     content,
     status,
-  })) as { success: true };
+  });
 };
 
-export const deletePost = async ({
-  userId,
-  postId,
-}: {
-  userId: string;
-  postId: string;
-}): Promise<{ success: true }> => {
-  return (await convex.mutation(anyApi.mcp.postsDeleteForMcp, {
+export const deletePost = async ({ userId, postId }: { userId: string; postId: string }) => {
+  return await convex.mutation(api.mcp.postsDeleteForMcp, {
     serviceSecret: env.serviceSecret,
     userId,
-    postId,
-  })) as { success: true };
+    postId: postId as FunctionArgs<typeof api.mcp.postsDeleteForMcp>['postId'],
+  });
 };

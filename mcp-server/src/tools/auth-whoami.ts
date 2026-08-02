@@ -1,13 +1,12 @@
 import { type InferSchema, type ToolMetadata } from 'xmcp';
-import { authWhoAmI } from '../lib/convex-client';
-import { getSessionUser } from '../lib/clerk-session';
+import { requireMcpActor } from '../lib/clerk-session';
 import { toToolResult } from '../lib/tool-result';
 
 export const schema = {};
 
 export const metadata: ToolMetadata = {
   name: 'auth_whoami',
-  description: 'Return authenticated MCP user identity.',
+  description: 'Return authenticated MCP user identity and remaining generation credits.',
   annotations: {
     readOnlyHint: true,
     idempotentHint: true,
@@ -16,15 +15,19 @@ export const metadata: ToolMetadata = {
 };
 
 export default async function authWhoAmITool(_: InferSchema<typeof schema>) {
-  const { session, user } = await getSessionUser();
-  const identity = await authWhoAmI(session.userId);
+  const { userId, sessionId, email, account } = await requireMcpActor();
 
   return toToolResult(
     {
-      ...identity,
-      sessionId: session.sessionId,
-      email: user?.primaryEmailAddress?.emailAddress,
+      userId,
+      authType: 'clerk' as const,
+      sessionId,
+      email,
+      status: account.status,
+      generationsUsed: account.generationsUsed,
+      generationLimit: account.generationLimit,
+      remaining: account.remaining,
     },
-    'Authenticated user resolved.',
+    `Authenticated as ${email}. ${account.remaining} of ${account.generationLimit} generations remaining.`,
   );
 }

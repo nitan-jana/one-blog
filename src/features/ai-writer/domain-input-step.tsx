@@ -8,12 +8,14 @@ export default function DomainInputStep({
   onSubmit,
   loading,
   recentDomains,
+  disabled = false,
 }: {
   domain: string;
   onDomainChange: (value: string) => void;
   onSubmit: (e: React.FormEvent) => void;
   loading: boolean;
   recentDomains: string[];
+  disabled?: boolean;
 }) {
   return (
     <form onSubmit={onSubmit} className="space-y-4">
@@ -26,10 +28,10 @@ export default function DomainInputStep({
           placeholder='e.g., "AI and Technology"'
           value={domain}
           onChange={(e) => onDomainChange(e.target.value)}
-          disabled={loading}
+          disabled={loading || disabled}
         />
       </div>
-      <Button type="submit" disabled={loading || !domain.trim()}>
+      <Button type="submit" disabled={loading || disabled || !domain.trim()}>
         {loading ? (
           <>
             <Loader2 className="size-4 animate-spin" />
@@ -54,7 +56,7 @@ export default function DomainInputStep({
                 size="sm"
                 className="h-7 text-xs"
                 onClick={() => onDomainChange(d)}
-                disabled={loading}
+                disabled={loading || disabled}
               >
                 {d}
               </Button>

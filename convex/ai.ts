@@ -3,10 +3,12 @@
 import { anyApi } from 'convex/server';
 import { v } from 'convex/values';
 import OpenAI from 'openai';
+import type { ActionCtx } from './_generated/server';
 import { action } from './_generated/server';
-import { api } from './_generated/api';
-
-type Provider = 'openai_web' | 'gsc';
+import { api, internal } from './_generated/api';
+import { requireWebActor } from './lib/identity';
+import { modelFor } from './lib/models';
+import { assertServiceSecret } from './lib/service';
 
 type TopicCandidate = {
   name: string;
@@ -22,7 +24,46 @@ type GeneratedPost = {
   wordCount: number;
 };
 
-const providerValidator = v.optional(v.union(v.literal('openai_web'), v.literal('gsc')));
+type Quota = {
+  used: number;
+  limit: number;
+  remaining: number;
+};
+
+/**
+ * Reserve a credit, do the OpenAI work, refund if it fails. Every AI action goes through here —
+ * the web app and the MCP server charge the same account, so neither surface is a way around the
+ * other's quota.
+ */
+const withCredit = async <T>(
+  ctx: ActionCtx,
+  {
+    email,
+    userId,
+    tool,
+    source,
+  }: { email: string; userId: string; tool: string; source: 'mcp' | 'web' },
+  work: (quota: Quota) => Promise<T>,
+): Promise<T> => {
+  const reserved = await ctx.runMutation(internal.access.consume, {
+    email,
+    userId,
+    tool,
+    cost: 1,
+    source,
+  });
+
+  try {
+    return await work({
+      used: reserved.used,
+      limit: reserved.limit,
+      remaining: reserved.remaining,
+    });
+  } catch (error) {
+    await ctx.runMutation(internal.access.refund, { usageId: reserved.usageId });
+    throw error;
+  }
+};
 
 const getClient = () => {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -30,21 +71,6 @@ const getClient = () => {
     throw new Error('OPENAI_API_KEY not set. Run: npx convex env set OPENAI_API_KEY <key>');
   }
   return new OpenAI({ apiKey });
-};
-
-const assertServiceSecret = (provided: string) => {
-  const expected = process.env.MCP_SERVICE_SECRET;
-  if (!expected || provided !== expected) {
-    throw new Error('Unauthorized');
-  }
-};
-
-const resolveProvider = (provider?: Provider): Provider => {
-  const selected = provider ?? 'openai_web';
-  if (selected === 'gsc') {
-    throw new Error('Provider "gsc" is not configured yet. Use "openai_web" for now.');
-  }
-  return selected;
 };
 
 const extractText = (response: OpenAI.Responses.Response): string => {
@@ -95,6 +121,29 @@ const parseTopics = (jsonText: string, limit: number): TopicCandidate[] => {
   });
 };
 
+/**
+ * The write call uses strict structured output, so malformed JSON is an API-level error rather
+ * than something to defend against here. A refusal can still come back as prose, though.
+ */
+const parsePost = (jsonText: string): { title: string; content: string } => {
+  const parsed: unknown = JSON.parse(jsonText);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Invalid post response');
+  }
+
+  const candidate = parsed as Record<string, unknown>;
+  if (typeof candidate.title !== 'string' || typeof candidate.content !== 'string') {
+    throw new Error('Invalid post response');
+  }
+
+  const content = candidate.content.trim();
+  if (!content) {
+    throw new Error('No content generated');
+  }
+
+  return { title: candidate.title.trim(), content };
+};
+
 const findTrendingTopicsWithOpenAI = async ({
   client,
   domain,
@@ -105,7 +154,7 @@ const findTrendingTopicsWithOpenAI = async ({
   limit: number;
 }): Promise<TopicCandidate[]> => {
   const response = await client.responses.create({
-    model: 'gpt-4o',
+    model: modelFor('topics'),
     tools: [{ type: 'web_search_preview' }],
     input: `Find ${limit} trending topics in the "${domain}" domain that would make great blog posts right now. Use web search to find current trends, popular discussions, and emerging topics.
 
@@ -135,7 +184,7 @@ const generatePostWithOpenAI = async ({
   wordCount: number;
 }> => {
   const researchResponse = await client.responses.create({
-    model: 'gpt-4o',
+    model: modelFor('research'),
     tools: [{ type: 'web_search_preview' }],
     input: `Research the topic "${topic}" in the "${domain}" domain. Use web search to find:
       - Key facts and statistics
@@ -149,7 +198,7 @@ const generatePostWithOpenAI = async ({
   const research = extractText(researchResponse);
 
   const writeResponse = await client.responses.create({
-    model: 'gpt-4o',
+    model: modelFor('write'),
     input: `Using this research, write a comprehensive blog post:
 
       Research:
@@ -162,58 +211,68 @@ const generatePostWithOpenAI = async ({
       - Format: Markdown
       - Include: engaging introduction, clear headings (##), practical examples, statistics where relevant, actionable conclusion
       - Tone: professional but accessible
-      - Do NOT include a title heading (it will be added separately)
+
+      Return two fields:
+      - "title": one compelling title that reflects the post you actually wrote. No surrounding quotes.
+      - "content": the post body. Do NOT repeat the title as a heading — it is stored separately.
 
       Write the blog post now.`,
+    text: {
+      format: {
+        type: 'json_schema',
+        name: 'blog_post',
+        strict: true,
+        schema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            content: { type: 'string' },
+          },
+          required: ['title', 'content'],
+          additionalProperties: false,
+        },
+      },
+    },
   });
 
-  const content = extractText(writeResponse);
-  if (!content) {
-    throw new Error('No content generated');
-  }
+  const parsed = parsePost(extractText(writeResponse));
+  const title = parsed.title.replace(/^["']|["']$/g, '') || topic;
+  const wordCount = parsed.content.split(/\s+/).filter(Boolean).length;
 
-  const wordCount = content.split(/\s+/).filter(Boolean).length;
-
-  const titleResponse = await client.responses.create({
-    model: 'gpt-4o',
-    input: `Generate a single compelling blog post title for this content about "${topic}". Return ONLY the title text, nothing else.`,
-  });
-
-  const titleText = extractText(titleResponse);
-  const title = titleText ? titleText.replace(/^["']|["']$/g, '') : topic;
-
-  return { title, content, wordCount };
+  return { title, content: parsed.content, wordCount };
 };
 
 export const findTrendingTopics = action({
   args: {
     domain: v.string(),
     limit: v.optional(v.number()),
-    provider: providerValidator,
   },
-  handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error('Unauthorized: Please sign in to use AI features');
-    }
+  handler: async (ctx, args): Promise<{ topics: TopicCandidate[]; quota: Quota }> => {
+    const actor = await requireWebActor(ctx.auth);
 
-    resolveProvider(args.provider);
     const limit = Math.min(Math.max(Math.floor(args.limit ?? 5), 1), 10);
-    const client = getClient();
 
-    const topics = await findTrendingTopicsWithOpenAI({
-      client,
-      domain: args.domain,
-      limit,
-    });
+    return await withCredit(
+      ctx,
+      { ...actor, tool: 'topics_find_trending', source: 'web' },
+      async (quota) => {
+        const client = getClient();
 
-    await ctx.runMutation(api.topics.createBatch, {
-      userId: identity.subject,
-      domain: args.domain,
-      topics,
-    });
+        const topics = await findTrendingTopicsWithOpenAI({
+          client,
+          domain: args.domain,
+          limit,
+        });
 
-    return topics;
+        await ctx.runMutation(api.topics.createBatch, {
+          userId: actor.userId,
+          domain: args.domain,
+          topics,
+        });
+
+        return { topics, quota };
+      },
+    );
   },
 });
 
@@ -221,31 +280,42 @@ export const findTrendingTopicsForMcp = action({
   args: {
     serviceSecret: v.string(),
     userId: v.string(),
+    email: v.string(),
     domain: v.string(),
     limit: v.optional(v.number()),
-    provider: providerValidator,
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<{ topics: TopicCandidate[]; quota: Quota }> => {
     assertServiceSecret(args.serviceSecret);
-    resolveProvider(args.provider);
 
     const limit = Math.min(Math.max(Math.floor(args.limit ?? 5), 1), 10);
-    const client = getClient();
 
-    const topics = await findTrendingTopicsWithOpenAI({
-      client,
-      domain: args.domain,
-      limit,
-    });
+    return await withCredit(
+      ctx,
+      {
+        email: args.email,
+        userId: args.userId,
+        tool: 'topics_find_trending',
+        source: 'mcp',
+      },
+      async (quota) => {
+        const client = getClient();
 
-    await ctx.runMutation(anyApi.mcp.topicsCreateBatchForMcp, {
-      serviceSecret: args.serviceSecret,
-      userId: args.userId,
-      domain: args.domain,
-      topics,
-    });
+        const topics = await findTrendingTopicsWithOpenAI({
+          client,
+          domain: args.domain,
+          limit,
+        });
 
-    return topics;
+        await ctx.runMutation(anyApi.mcp.topicsCreateBatchForMcp, {
+          serviceSecret: args.serviceSecret,
+          userId: args.userId,
+          domain: args.domain,
+          topics,
+        });
+
+        return { topics, quota };
+      },
+    );
   },
 });
 
@@ -253,39 +323,41 @@ export const generatePost = action({
   args: {
     topic: v.string(),
     domain: v.string(),
-    provider: providerValidator,
   },
-  handler: async (ctx, args): Promise<GeneratedPost> => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error('Unauthorized: Please sign in to use AI features');
-    }
+  handler: async (ctx, args): Promise<GeneratedPost & { quota: Quota }> => {
+    const actor = await requireWebActor(ctx.auth);
 
-    resolveProvider(args.provider);
-    const client = getClient();
-    const generated = await generatePostWithOpenAI({
-      client,
-      topic: args.topic,
-      domain: args.domain,
-    });
+    return await withCredit(
+      ctx,
+      { ...actor, tool: 'post_generate_from_topic', source: 'web' },
+      async (quota) => {
+        const client = getClient();
+        const generated = await generatePostWithOpenAI({
+          client,
+          topic: args.topic,
+          domain: args.domain,
+        });
 
-    const postId = await ctx.runMutation(api.posts.create, {
-      userId: identity.subject,
-      title: generated.title,
-      content: generated.content,
-      status: 'published',
-      generatedBy: 'ai',
-      domain: args.domain,
-      topic: args.topic,
-      wordCount: generated.wordCount,
-    });
+        const postId = await ctx.runMutation(api.posts.create, {
+          userId: actor.userId,
+          title: generated.title,
+          content: generated.content,
+          status: 'published',
+          generatedBy: 'ai',
+          domain: args.domain,
+          topic: args.topic,
+          wordCount: generated.wordCount,
+        });
 
-    return {
-      _id: postId,
-      title: generated.title,
-      content: generated.content,
-      wordCount: generated.wordCount,
-    };
+        return {
+          _id: postId,
+          title: generated.title,
+          content: generated.content,
+          wordCount: generated.wordCount,
+          quota,
+        };
+      },
+    );
   },
 });
 
@@ -293,37 +365,48 @@ export const generatePostForMcp = action({
   args: {
     serviceSecret: v.string(),
     userId: v.string(),
+    email: v.string(),
     topic: v.string(),
     domain: v.string(),
-    provider: providerValidator,
   },
-  handler: async (ctx, args): Promise<GeneratedPost> => {
+  handler: async (ctx, args): Promise<GeneratedPost & { quota: Quota }> => {
     assertServiceSecret(args.serviceSecret);
-    resolveProvider(args.provider);
 
-    const client = getClient();
-    const generated = await generatePostWithOpenAI({
-      client,
-      topic: args.topic,
-      domain: args.domain,
-    });
+    return await withCredit(
+      ctx,
+      {
+        email: args.email,
+        userId: args.userId,
+        tool: 'post_generate_from_topic',
+        source: 'mcp',
+      },
+      async (quota) => {
+        const client = getClient();
+        const generated = await generatePostWithOpenAI({
+          client,
+          topic: args.topic,
+          domain: args.domain,
+        });
 
-    const created = await ctx.runMutation(anyApi.mcp.postsCreateForMcp, {
-      serviceSecret: args.serviceSecret,
-      userId: args.userId,
-      title: generated.title,
-      content: generated.content,
-      status: 'published',
-      generatedBy: 'ai',
-      domain: args.domain,
-      topic: args.topic,
-    });
+        const created = await ctx.runMutation(anyApi.mcp.postsCreateForMcp, {
+          serviceSecret: args.serviceSecret,
+          userId: args.userId,
+          title: generated.title,
+          content: generated.content,
+          status: 'published',
+          generatedBy: 'ai',
+          domain: args.domain,
+          topic: args.topic,
+        });
 
-    return {
-      _id: created.postId,
-      title: generated.title,
-      content: generated.content,
-      wordCount: generated.wordCount,
-    };
+        return {
+          _id: created.postId,
+          title: generated.title,
+          content: generated.content,
+          wordCount: generated.wordCount,
+          quota,
+        };
+      },
+    );
   },
 });

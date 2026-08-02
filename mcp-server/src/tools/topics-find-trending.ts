@@ -1,18 +1,18 @@
 import { z } from 'zod';
 import { type InferSchema, type ToolMetadata } from 'xmcp';
-import { findTrendingTopics, type Provider } from '../lib/convex-client';
-import { requireSessionUserId } from '../lib/clerk-session';
+import { findTrendingTopics } from '../lib/convex-client';
+import { requireMcpActor } from '../lib/clerk-session';
 import { toToolResult } from '../lib/tool-result';
 
 export const schema = {
   domain: z.string().min(1),
   limit: z.number().int().min(1).max(10).optional(),
-  provider: z.enum(['openai_web', 'gsc']).optional(),
 };
 
 export const metadata: ToolMetadata = {
   name: 'topics_find_trending',
-  description: 'Find trending blog topics for a domain and persist them to One Blog.',
+  description:
+    'Find trending blog topics for a domain and persist them to One Blog. Consumes one generation credit from the caller.',
   annotations: {
     readOnlyHint: false,
     idempotentHint: false,
@@ -23,23 +23,26 @@ export const metadata: ToolMetadata = {
 export default async function topicsFindTrendingTool({
   domain,
   limit,
-  provider,
 }: InferSchema<typeof schema>) {
-  const userId = await requireSessionUserId();
+  const { userId, email } = await requireMcpActor();
 
-  const topics = await findTrendingTopics({
+  const { topics, quota } = await findTrendingTopics({
     userId,
+    email,
     domain,
     limit,
-    provider: provider as Provider | undefined,
   });
 
   const result = {
     topics,
-    providerUsed: provider ?? 'openai_web',
+    quota,
     dataScope: 'app',
     fetchedAt: Date.now(),
   };
 
-  return toToolResult(result, `Found ${topics.length} trending topic(s) for "${domain}".`);
+  return toToolResult(
+    result,
+    `Found ${topics.length} trending topic(s) for "${domain}". ` +
+      `${quota.remaining} of ${quota.limit} generations remaining.`,
+  );
 }

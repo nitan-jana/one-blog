@@ -28,7 +28,7 @@ generation — with proper MCP tool annotations. Full docs and setup:
 **[`mcp-server/README.md`](./mcp-server/README.md)**.
 
 **2. A Convex + OpenAI generation backend** ([`convex/`](./convex)). An OpenAI-powered generation
-action behind a swappable provider abstraction, with a `draft → generating → published` status flow.
+action with per-call-site model configuration, and a `draft → generating → published` status flow.
 The in-app **AI writer** wraps it in a multi-step flow: domain → trending topics → generate →
 publish. The MCP server calls the same backend over a service-secret boundary.
 
@@ -46,7 +46,7 @@ MCP server  (xmcp, @xmcp-dev/clerk)      ── mcp.oneblog.nitanjana.com
 Convex backend  ── generation, posts, topics
       │
       ▼
-OpenAI  (provider-abstracted)
+OpenAI  (model configurable per call site)
 
 Web app (React + Vite + Clerk + Convex)  ── oneblog.nitanjana.com
       └─ multi-step AI writer over the same Convex backend
@@ -56,6 +56,9 @@ Two independent auth mechanisms, kept deliberately separate:
 
 - **Clerk OAuth / JWT** authenticates the _human user_ (web app and MCP client).
 - **A service secret** authenticates the _MCP server itself_ to Convex (machine-to-machine).
+
+How the generation backend itself works — the OpenAI call chain, response parsing, and the metering
+seam both surfaces share — is in [`docs/ai-pipeline.md`](./docs/ai-pipeline.md).
 
 ---
 
@@ -79,6 +82,11 @@ pnpm dev                  # app
 cd mcp-server && pnpm dev # MCP server
 ```
 
+Verifying a change in the running app — including how to drive the quota states —
+is covered in [`docs/testing-the-ui.md`](./docs/testing-the-ui.md). Shipping to production is
+[`docs/releasing.md`](./docs/releasing.md); the three units share one backend and are not
+independently deployable when the Convex API changes.
+
 ### Environment variables
 
 **App**
@@ -90,9 +98,52 @@ cd mcp-server && pnpm dev # MCP server
 
 - `OPENAI_API_KEY`
 - `MCP_SERVICE_SECRET` — shared with the MCP server
+- `MCP_TRIAL_GENERATION_LIMIT` — optional; generations a new account gets (defaults to 10)
+- `OPENAI_MODEL` — optional; default model for every call (defaults to `gpt-4o`).
+  `OPENAI_MODEL_TOPICS`, `OPENAI_MODEL_RESEARCH` and `OPENAI_MODEL_WRITE` override it per call
+  site — see [`docs/ai-pipeline.md`](./docs/ai-pipeline.md)
 - Clerk issuer domain (referenced by `convex/auth.config.ts`)
 
 **MCP server** — see [`mcp-server/README.md`](./mcp-server/README.md).
+
+### Clerk JWT template
+
+The `convex` JWT template must include the caller's email — generation quotas are keyed on it, and
+the backend reads it from the token rather than trusting the client. In the Clerk dashboard, under
+**JWT Templates → convex**, add:
+
+```json
+{
+  "email": "{{user.primary_email_address}}",
+  "email_verified": "{{user.email_verified}}"
+}
+```
+
+Without it, AI generation fails with a message pointing back here.
+
+---
+
+## Access control
+
+Signing in says who you are; it does not say how much of the OpenAI budget you may spend. Every
+account gets a **lifetime trial of 10 generations**, and the web app and the MCP server draw on the
+same balance — there is no cheaper path between them.
+
+Finding trending topics and generating a post cost one credit each; everything else (reading,
+editing, deleting posts) is free. The credit is reserved inside the Convex action before any OpenAI
+call and refunded if that call fails.
+
+Limits are managed from the CLI, which authenticates with the deploy key:
+
+```bash
+npx convex run access:list '{"limit":50}'
+npx convex run access:grant '{"email":"friend@example.com","limit":50,"note":"beta"}'
+npx convex run access:revoke '{"email":"spammer@example.com"}'
+npx convex run access:report '{}'      # net spend per account, by tool and surface
+```
+
+Full details — enforcement points, the audit table, the rest of the admin recipes — are in
+[`mcp-server/README.md`](./mcp-server/README.md#access-control).
 
 ---
 

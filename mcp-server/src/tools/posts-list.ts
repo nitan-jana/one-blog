@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { type InferSchema, type ToolMetadata } from 'xmcp';
-import { listPosts, type PostStatus } from '../lib/convex-client';
-import { requireSessionUserId } from '../lib/clerk-session';
+import { listPosts } from '../lib/convex-client';
+import { requireMcpActor } from '../lib/clerk-session';
 import { toToolResult } from '../lib/tool-result';
 
 export const schema = {
@@ -21,11 +21,11 @@ export const metadata: ToolMetadata = {
 };
 
 export default async function postsListTool({ status, limit, cursor }: InferSchema<typeof schema>) {
-  const userId = await requireSessionUserId();
+  const { userId } = await requireMcpActor();
 
   const result = await listPosts({
     userId,
-    status: status as PostStatus | undefined,
+    status,
     limit,
     cursor,
   });

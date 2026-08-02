@@ -6,10 +6,12 @@ export default function TopicListStep({
   topics,
   onSelect,
   onReset,
+  disabled = false,
 }: {
   topics: Topic[];
   onSelect: (topic: Topic) => void;
   onReset: () => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="space-y-3">
@@ -19,8 +21,10 @@ export default function TopicListStep({
           <button
             key={i}
             onClick={() => onSelect(topic)}
+            disabled={disabled}
             className={cn(
               'hover:bg-accent border-border w-full rounded-md border p-3 text-left transition-colors',
+              disabled && 'pointer-events-none opacity-50',
             )}
           >
             <div className="flex items-start justify-between gap-2">
