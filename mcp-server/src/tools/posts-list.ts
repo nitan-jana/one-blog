@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { type InferSchema, type ToolMetadata } from 'xmcp';
-import { listPosts, type PostStatus } from '../lib/convex-client';
+import { listPosts } from '../lib/convex-client';
 import { requireMcpActor } from '../lib/clerk-session';
 import { toToolResult } from '../lib/tool-result';
 
@@ -25,7 +25,7 @@ export default async function postsListTool({ status, limit, cursor }: InferSche
 
   const result = await listPosts({
     userId,
-    status: status as PostStatus | undefined,
+    status,
     limit,
     cursor,
   });

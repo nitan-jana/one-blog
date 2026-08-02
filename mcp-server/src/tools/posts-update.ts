@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { type InferSchema, type ToolMetadata } from 'xmcp';
-import { updatePost, type PostStatus } from '../lib/convex-client';
+import { updatePost } from '../lib/convex-client';
 import { requireMcpActor } from '../lib/clerk-session';
 import { toToolResult } from '../lib/tool-result';
 
@@ -37,7 +37,7 @@ export default async function postsUpdateTool({
     postId,
     title,
     content,
-    status: status as PostStatus | undefined,
+    status,
   });
 
   return toToolResult(result, `Updated post: ${postId}.`);

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { type InferSchema, type ToolMetadata } from 'xmcp';
-import { createPost, type PostStatus } from '../lib/convex-client';
+import { createPost } from '../lib/convex-client';
 import { requireMcpActor } from '../lib/clerk-session';
 import { toToolResult } from '../lib/tool-result';
 
@@ -37,7 +37,7 @@ export default async function postsCreateTool({
     content,
     domain,
     topic,
-    status: status as PostStatus | undefined,
+    status,
   });
 
   return toToolResult(post, `Created post${title ? `: ${title}` : ''}.`);
