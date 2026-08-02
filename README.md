@@ -28,7 +28,7 @@ generation — with proper MCP tool annotations. Full docs and setup:
 **[`mcp-server/README.md`](./mcp-server/README.md)**.
 
 **2. A Convex + OpenAI generation backend** ([`convex/`](./convex)). An OpenAI-powered generation
-action behind a swappable provider abstraction, with a `draft → generating → published` status flow.
+action with per-call-site model configuration, and a `draft → generating → published` status flow.
 The in-app **AI writer** wraps it in a multi-step flow: domain → trending topics → generate →
 publish. The MCP server calls the same backend over a service-secret boundary.
 
@@ -46,7 +46,7 @@ MCP server  (xmcp, @xmcp-dev/clerk)      ── mcp.oneblog.nitanjana.com
 Convex backend  ── generation, posts, topics
       │
       ▼
-OpenAI  (provider-abstracted)
+OpenAI  (model configurable per call site)
 
 Web app (React + Vite + Clerk + Convex)  ── oneblog.nitanjana.com
       └─ multi-step AI writer over the same Convex backend
@@ -56,6 +56,9 @@ Two independent auth mechanisms, kept deliberately separate:
 
 - **Clerk OAuth / JWT** authenticates the _human user_ (web app and MCP client).
 - **A service secret** authenticates the _MCP server itself_ to Convex (machine-to-machine).
+
+How the generation backend itself works — the OpenAI call chain, response parsing, and the metering
+seam both surfaces share — is in [`docs/ai-pipeline.md`](./docs/ai-pipeline.md).
 
 ---
 
@@ -79,6 +82,9 @@ pnpm dev                  # app
 cd mcp-server && pnpm dev # MCP server
 ```
 
+Verifying a change in the running app — including how to drive the quota states —
+is covered in [`docs/testing-the-ui.md`](./docs/testing-the-ui.md).
+
 ### Environment variables
 
 **App**
@@ -91,6 +97,9 @@ cd mcp-server && pnpm dev # MCP server
 - `OPENAI_API_KEY`
 - `MCP_SERVICE_SECRET` — shared with the MCP server
 - `MCP_TRIAL_GENERATION_LIMIT` — optional; generations a new account gets (defaults to 10)
+- `OPENAI_MODEL` — optional; default model for every call (defaults to `gpt-4o`).
+  `OPENAI_MODEL_TOPICS`, `OPENAI_MODEL_RESEARCH` and `OPENAI_MODEL_WRITE` override it per call
+  site — see [`docs/ai-pipeline.md`](./docs/ai-pipeline.md)
 - Clerk issuer domain (referenced by `convex/auth.config.ts`)
 
 **MCP server** — see [`mcp-server/README.md`](./mcp-server/README.md).
